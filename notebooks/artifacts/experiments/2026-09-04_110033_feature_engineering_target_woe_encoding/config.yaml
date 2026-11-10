@@ -1,0 +1,17 @@
+date_col: fecha_inicio_obra
+target: flg_opa_incumplimiento_contractual
+train_test_split_ratio: 0.65
+columnas_target_encoding:
+- tipo_obra_nivel_2
+- tipo_obra_nivel_3
+- departamento
+- provincia
+columnas_woe:
+- codigo_entidad
+- sector_entidad
+columnas_onehot:
+- naturaleza_obra
+- tipo_formato
+target_encoding_smoothing: 20.0
+woe_smoothing: 20.0
+woe_eps: 0.5

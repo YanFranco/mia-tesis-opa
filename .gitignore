@@ -1,0 +1,43 @@
+# Entornos virtuales
+venv/
+.venv/
+env/
+ENV/
+Chpt/
+
+# Datos y almacenamiento pesado (¡No subir a GitHub!)
+data/
+*.csv
+*.xlsx
+*.jsonl
+*.parquet
+*.pkl
+*.pickle
+*.h5
+*.h5py
+*.joblib
+
+# Artefactos generados por experimentos
+artifacts/*
+!artifacts/.gitkeep
+!artifacts/experiments/
+artifacts/experiments/*
+!artifacts/experiments/.gitkeep
+
+# Jupyter Notebooks (Archivos temporales)
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Configuración y credenciales
+.env
+.secrets
+.config
+credentials.json
+
+# IDEs y editores de código
+.vscode/
+.idea/
+.DS_Store
