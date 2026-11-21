@@ -11,3 +11,4 @@ missingno
 tabulate # df to markdown
 statsmodels # GLM con link cloglog (M4)
 openpyxl # lectura de archivos excel (.xlsx)
+duckdb

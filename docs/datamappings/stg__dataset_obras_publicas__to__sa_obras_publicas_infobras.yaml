@@ -140,21 +140,25 @@ audit_columns:
     nullable: false
     derivation: "Fecha extraída del nombre del archivo (source.snapshot_date_extraction)."
     description: "Fecha lógica del snapshot; clave de partición y de reemplazo."
+    active: true
   - target: nombre_archivo
     type: string
     nullable: false
     derivation: "Nombre del archivo fuente."
     description: "Linaje: archivo de origen."
+    active: false
   - target: fecha_creacion
     type: timestamp
     nullable: false
     derivation: "DEFAULT en la base de datos (now)."
     description: "Momento de carga."
+    active: false
   - target: usuario_creacion
     type: string
     nullable: false
     derivation: "DEFAULT en la base de datos (current_user)."
     description: "Usuario que ejecutó la carga."
+    active: false
 
 # -----------------------------------------------------------------------------
 # MAPEO DE COLUMNAS
@@ -201,8 +205,8 @@ column_groups:
     columns:
       - {source: "Nivel de gobierno", target: nivel_gobierno, type: string, nullable: true, transform: TRF_NONE, description: "Nacional, regional o local."}
       - {source: "Sector de la Entidad", target: sector_entidad, type: string, nullable: true, transform: TRF_NONE, description: "Sector de la entidad."}
-      - {source: "Codigo unico de inversión", target: codigo_unico, type: string, nullable: true, transform: TRF_NONE, description: "Código Único de Inversiones (Invierte.pe)."}
-      - {source: "Código SNIP", target: codigo_snip, type: string, nullable: true, transform: TRF_NONE, description: "Código SNIP del proyecto."}
+      - {source: "Codigo unico de inversión", target: codigo_unico, type: string, nullable: true, transform: TRF_FORCE_STRING, description: "Código Único de Inversiones (Invierte.pe)."}
+      - {source: "Código SNIP", target: codigo_snip, type: string, nullable: true, transform: TRF_FORCE_STRING, description: "Código SNIP del proyecto."}
       - {source: "Nombre proyecto", target: nombre_proyecto, type: string, nullable: true, transform: TRF_NONE, description: "Nombre del proyecto de inversión."}
       - {source: "Estado del proyecto", target: estado_proyecto, type: string, nullable: true, transform: TRF_NONE, description: "Estado del proyecto."}
       - {source: "Tipo Formato", target: tipo_formato, type: string, nullable: true, transform: TRF_NONE, description: "Tipo de formato de inversión."}
@@ -234,10 +238,10 @@ column_groups:
   - group: contratista
     description: "Empresas o consorcios contratistas (hasta 2 ocurrencias)."
     columns:
-      - {source: "RUC", source_occurrence: 1, target: ruc_1, type: string, nullable: true, transform: TRF_NONE, description: "RUC del contratista 1."}
+      - {source: "RUC", source_occurrence: 1, target: ruc_1, type: string, nullable: true, transform: TRF_FORCE_STRING, description: "RUC del contratista 1."}
       - {source: "Nombre o razón social de la empresa o consorcio", source_occurrence: 1, target: razon_social_empresa_consorcio_1, type: string, nullable: true, transform: TRF_NONE, description: "Razón social del contratista 1."}
       - {source: "Monto del contrato  en soles", source_occurrence: 1, target: monto_contrato_soles_1, type: decimal, nullable: true, transform: TRF_AMOUNT_SPACE_TO_DECIMAL, unit: PEN, description: "Monto de contrato 1."}
-      - {source: "RUC", source_occurrence: 2, target: ruc_2, type: string, nullable: true, transform: TRF_NONE, description: "RUC del contratista 2."}
+      - {source: "RUC", source_occurrence: 2, target: ruc_2, type: string, nullable: true, transform: TRF_FORCE_STRING, description: "RUC del contratista 2."}
       - {source: "Nombre o razón social de la empresa o consorcio:", source_occurrence: 2, target: razon_social_empresa_consorcio_2, type: string, nullable: true, transform: TRF_NONE, description: "Razón social del contratista 2 (el encabezado origen termina en ':')."}
       - {source: "Monto del contrato  en soles", source_occurrence: 2, target: monto_contrato_soles_2, type: decimal, nullable: true, transform: TRF_AMOUNT_SPACE_TO_DECIMAL, unit: PEN, description: "Monto de contrato 2."}
 
@@ -245,10 +249,10 @@ column_groups:
     description: "Profesional/empresa a cargo de la supervisión (ocurrencia 1; inferido por las fechas de supervisión)."
     columns:
       - {source: "Tipo de documento de identidad", source_occurrence: 1, target: tipo_documento_identidad, type: string, nullable: true, transform: TRF_NONE, pii: true, description: "Tipo de documento del supervisor."}
-      - {source: "Número de documento", source_occurrence: 1, target: numero_documento_identidad, type: string, nullable: true, transform: TRF_NONE, pii: true, description: "Número de documento del supervisor."}
+      - {source: "Número de documento", source_occurrence: 1, target: numero_documento_identidad, type: string, nullable: true, transform: TRF_FORCE_STRING, pii: true, description: "Número de documento del supervisor."}
       - {source: "Nombres Apellidos", source_occurrence: 1, target: nombres_apellidos, type: string, nullable: true, transform: TRF_NONE, pii: true, description: "Nombre del supervisor."}
       - {source: "Colegiatura", source_occurrence: 1, target: colegiatura, type: string, nullable: true, transform: TRF_NONE, description: "Colegio profesional."}
-      - {source: "Número de colegiatura", source_occurrence: 1, target: numero_colegiatura, type: string, nullable: true, transform: TRF_NONE, description: "Número de colegiatura."}
+      - {source: "Número de colegiatura", source_occurrence: 1, target: numero_colegiatura, type: string, nullable: true, transform: TRF_FORCE_STRING, description: "Número de colegiatura."}
       - {source: "Fecha inicio supervision", target: fecha_inicio_supervision, type: date, nullable: true, transform: TRF_DATE_DAYFIRST, description: "Inicio de la supervisión."}
       - {source: "Fecha fin supervision", target: fecha_fin_supervision, type: date, nullable: true, transform: TRF_DATE_DAYFIRST, description: "Fin de la supervisión."}
 

@@ -1,0 +1,132 @@
+mapping:
+  id: "gold__dv_obras_publicas__to__ds_obras_publicas"
+  version: "1.0.0"
+  title: "Mapeo Silver Data Vault 2.0 -> Gold POC ds_obras_publicas (37 columnas)"
+  description: >-
+    Especificacion del ensamblado desnormalizado a nivel 1 fila por codigo_infobras
+    en la capa Gold (data/gold/ds_obras_publicas/part-00000.parquet) leyendo
+    exclusivamente desde las 13 tablas Parquet de data/silver/ y el archivo
+    configs/categoria_paralizacion.yaml.
+  design_doc: "docs/designs/silver_datavault_y_gold_poc_ds_obras_publicas.md"
+  notebook: "etl/07_carga_gold_ds_obras_publicas.ipynb"
+  config_file: "configs/categoria_paralizacion.yaml"
+
+source:
+  layer: "silver"
+  architecture: "Data Vault 2.0"
+  root_path: "data/silver"
+  format: "parquet"
+  tables_read:
+    - "hub_obra_publica"
+    - "hub_entidad"
+    - "hub_proyecto"
+    - "hub_contratista"
+    - "link_obra_entidad"
+    - "link_obra_proyecto"
+    - "link_obra_contratista"
+    - "sat_obra_paralizacion"
+    - "sat_obra_estado_ejecucion"
+    - "sat_obra_ubigeo"
+    - "sat_obra_expediente_tecnico"
+    - "sat_proyecto"
+    - "sat_link_obra_contratista"
+
+target:
+  layer: "gold"
+  dataset: "ds_obras_publicas"
+  path: "data/gold/ds_obras_publicas/part-00000.parquet"
+  work_path: "data/gold/_work"
+  logs_path: "data/gold/logs"
+  format: "parquet"
+  compression: "ZSTD"
+  compression_level: 9
+  grain: "1 fila por codigo_infobras (universo completo en hub_obra_publica desde 2023-07-11)"
+  order_by: ["codigo_infobras"]
+  column_count: 37
+
+load:
+  strategy: "Full rebuild desde Silver"
+  atomicity: "Escritura previa en data/gold/_work/_tmp/ds_obras_publicas -> validacion bloqueante G01-G05 -> promocion atomica con respaldo _old"
+
+conventions:
+  active_records_filter: "Las tablas SCD2 (Links y Satelites vigentes) se unen con end_date IS NULL"
+  paralizacion_aggregation: "Agregacion sobre todo el historial de sat_obra_paralizacion filtrado por flg_existe_paralizacion = TRUE"
+  dynamic_indicators: "Las columnas ind_opa_<categoria> se construyen iterando categories de configs/categoria_paralizacion.yaml en minusculas"
+  excluded_in_poc: "El campo BI 'marco' se difiere para una iteracion posterior"
+
+transformations:
+  - id: "G_T01_LINKS_VIGENTES"
+    description: "Resolucion de relaciones vigentes desde Links (end_date IS NULL)"
+    rule: >-
+      Se filtran link_obra_entidad, link_obra_proyecto y link_obra_contratista
+      (separado en rol='EJECUCION' para ruc_1 y rol='SUPERVISION' para ruc_2)
+      con end_date IS NULL antes de unir Hubs y Satelites asociados
+  - id: "G_T02_CONTRATISTAS_ROL"
+    description: "Separacion de atributos de contratista ejecutante y supervisor"
+    rule: >-
+      Se resuelve razon_social_empresa_consorcio desde hub_contratista y
+      monto_contrato_soles desde sat_link_obra_contratista (end_date IS NULL)
+      independientemente para rol='EJECUCION' (_eje) y rol='SUPERVISION' (_sup)
+  - id: "G_T03_HISTORIAL_PARALIZACIONES"
+    description: "Indicador, ultima causal y contadores por categoria de paralizacion"
+    rule: >-
+      Sobre sat_obra_paralizacion: flg_existe_paralizacion = COALESCE(BOOL_OR(flg_existe_paralizacion), FALSE);
+      causal_paralizacion_ultimo = ARG_MAX(causal_paralizacion, {'s': start_date, 'f': fecha_foto})
+      FILTER (WHERE flg_existe_paralizacion); ind_opa_<cat> = COALESCE(COUNT(*) FILTER
+      (WHERE flg_existe_paralizacion AND categoria_paralizacion = '<CAT>'), 0)::INTEGER
+
+columns:
+  - { pos: 1, name: "codigo_infobras", type: "VARCHAR", source_table: "hub_obra_publica", source_col: "codigo_infobras", rule: "PK de obra" }
+  - { pos: 2, name: "codigo_entidad", type: "VARCHAR", source_table: "link_obra_entidad", source_col: "codigo_entidad", rule: "end_date IS NULL" }
+  - { pos: 3, name: "nivel_gobierno", type: "VARCHAR", source_table: "hub_entidad", source_col: "nivel_gobierno", rule: "LEFT JOIN por codigo_entidad vigente" }
+  - { pos: 4, name: "sector_entidad", type: "VARCHAR", source_table: "hub_entidad", source_col: "sector_entidad", rule: "LEFT JOIN por codigo_entidad vigente" }
+  - { pos: 5, name: "codigo_unico", type: "VARCHAR", source_table: "link_obra_proyecto", source_col: "codigo_unico", rule: "end_date IS NULL" }
+  - { pos: 6, name: "tipo_formato", type: "VARCHAR", source_table: "hub_proyecto", source_col: "tipo_formato", rule: "LEFT JOIN por codigo_unico vigente" }
+  - { pos: 7, name: "n_obras_relacionadas_proyecto", type: "INTEGER", source_table: "sat_proyecto", source_col: "n_obras_relacionadas_proyecto", rule: "end_date IS NULL via codigo_unico vigente" }
+  - { pos: 8, name: "modalidad_ejecucion_obra", type: "VARCHAR", source_table: "hub_obra_publica", source_col: "modalidad_ejecucion_obra", rule: "Directo del Hub" }
+  - { pos: 9, name: "estado_ejecucion", type: "VARCHAR", source_table: "sat_obra_estado_ejecucion", source_col: "estado_ejecucion", rule: "end_date IS NULL" }
+  - { pos: 10, name: "naturaleza_obra", type: "VARCHAR", source_table: "hub_obra_publica", source_col: "naturaleza_obra", rule: "Directo del Hub" }
+  - { pos: 11, name: "tipo_obra_nivel_1", type: "VARCHAR", source_table: "hub_obra_publica", source_col: "tipo_obra_nivel_1", rule: "Directo del Hub" }
+  - { pos: 12, name: "tipo_obra_nivel_2", type: "VARCHAR", source_table: "hub_obra_publica", source_col: "tipo_obra_nivel_2", rule: "Directo del Hub" }
+  - { pos: 13, name: "tipo_obra_nivel_3", type: "VARCHAR", source_table: "hub_obra_publica", source_col: "tipo_obra_nivel_3", rule: "Directo del Hub" }
+  - { pos: 14, name: "fecha_inicio_obra", type: "DATE", source_table: "hub_obra_publica", source_col: "fecha_inicio_obra", rule: "Directo del Hub" }
+  - { pos: 15, name: "fecha_finalizacion_real", type: "DATE", source_table: "hub_obra_publica", source_col: "fecha_finalizacion_real", rule: "Directo del Hub" }
+  - { pos: 16, name: "departamento", type: "VARCHAR", source_table: "sat_obra_ubigeo", source_col: "departamento", rule: "LEFT JOIN por codigo_infobras" }
+  - { pos: 17, name: "provincia", type: "VARCHAR", source_table: "sat_obra_ubigeo", source_col: "provincia", rule: "LEFT JOIN por codigo_infobras" }
+  - { pos: 18, name: "distrito", type: "VARCHAR", source_table: "sat_obra_ubigeo", source_col: "distrito", rule: "LEFT JOIN por codigo_infobras" }
+  - { pos: 19, name: "fecha_aprobacion_expediente", type: "DATE", source_table: "sat_obra_expediente_tecnico", source_col: "fecha_aprobacion_expediente", rule: "end_date IS NULL" }
+  - { pos: 20, name: "monto_aprobacion_et", type: "DOUBLE", source_table: "sat_obra_expediente_tecnico", source_col: "monto_aprobacion_et", rule: "end_date IS NULL" }
+  - { pos: 21, name: "monto_aprobado_soles", type: "DOUBLE", source_table: "sat_obra_expediente_tecnico", source_col: "monto_aprobado_soles", rule: "end_date IS NULL" }
+  - { pos: 22, name: "ruc_1", type: "VARCHAR", source_table: "link_obra_contratista", source_col: "ruc", rule: "rol='EJECUCION' AND end_date IS NULL" }
+  - { pos: 23, name: "razon_social_empresa_consorcio_eje", type: "VARCHAR", source_table: "hub_contratista", source_col: "razon_social_empresa_consorcio", rule: "Via ruc_1 vigente" }
+  - { pos: 24, name: "monto_contrato_soles_eje", type: "DOUBLE", source_table: "sat_link_obra_contratista", source_col: "monto_contrato_soles", rule: "rol='EJECUCION' AND ruc=ruc_1 AND end_date IS NULL" }
+  - { pos: 25, name: "ruc_2", type: "VARCHAR", source_table: "link_obra_contratista", source_col: "ruc", rule: "rol='SUPERVISION' AND end_date IS NULL" }
+  - { pos: 26, name: "razon_social_empresa_consorcio_sup", type: "VARCHAR", source_table: "hub_contratista", source_col: "razon_social_empresa_consorcio", rule: "Via ruc_2 vigente" }
+  - { pos: 27, name: "monto_contrato_soles_sup", type: "DOUBLE", source_table: "sat_link_obra_contratista", source_col: "monto_contrato_soles", rule: "rol='SUPERVISION' AND ruc=ruc_2 AND end_date IS NULL" }
+  - { pos: 28, name: "flg_existe_paralizacion", type: "BOOLEAN", source_table: "sat_obra_paralizacion", source_col: "flg_existe_paralizacion", rule: "COALESCE(BOOL_OR(flg_existe_paralizacion), FALSE)" }
+  - { pos: 29, name: "causal_paralizacion_ultimo", type: "VARCHAR", source_table: "sat_obra_paralizacion", source_col: "causal_paralizacion", rule: "ARG_MAX(..., {start_date, fecha_foto}) FILTER (WHERE flg_existe_paralizacion)" }
+  - { pos: 30, name: "ind_opa_contractual", type: "INTEGER", source_table: "sat_obra_paralizacion", source_col: "categoria_paralizacion", rule: "COUNT FILTER categoria='CONTRACTUAL'" }
+  - { pos: 31, name: "ind_opa_financiero", type: "INTEGER", source_table: "sat_obra_paralizacion", source_col: "categoria_paralizacion", rule: "COUNT FILTER categoria='FINANCIERO'" }
+  - { pos: 32, name: "ind_opa_operativo", type: "INTEGER", source_table: "sat_obra_paralizacion", source_col: "categoria_paralizacion", rule: "COUNT FILTER categoria='OPERATIVO'" }
+  - { pos: 33, name: "ind_opa_externo", type: "INTEGER", source_table: "sat_obra_paralizacion", source_col: "categoria_paralizacion", rule: "COUNT FILTER categoria='EXTERNO'" }
+  - { pos: 34, name: "ind_opa_tecnico", type: "INTEGER", source_table: "sat_obra_paralizacion", source_col: "categoria_paralizacion", rule: "COUNT FILTER categoria='TECNICO'" }
+  - { pos: 35, name: "ind_opa_gobernanza", type: "INTEGER", source_table: "sat_obra_paralizacion", source_col: "categoria_paralizacion", rule: "COUNT FILTER categoria='GOBERNANZA'" }
+  - { pos: 36, name: "ind_opa_no_clasificado", type: "INTEGER", source_table: "sat_obra_paralizacion", source_col: "categoria_paralizacion", rule: "COUNT FILTER categoria='NO_CLASIFICADO'" }
+  - { pos: 37, name: "fecha_foto", type: "DATE", source_table: "hub_obra_publica", source_col: "fecha_foto", rule: "Ultima fecha_foto de la obra en Silver" }
+
+data_quality:
+  blocking_checks:
+    - id: "G01"
+      description: "1 fila por codigo_infobras: COUNT(*) = COUNT(DISTINCT codigo_infobras) = COUNT(hub_obra_publica)"
+    - id: "G02"
+      description: "Esquema y tipos exactos de las 37 columnas esperadas en el Parquet temporal"
+    - id: "G03"
+      description: "Cero nulos y cero valores negativos (< 0) en todas las columnas ind_opa_*"
+    - id: "G04"
+      description: "Conservacion total de eventos: SUM(ind_opa_*) en Gold = COUNT(*) FILTER (WHERE flg_existe_paralizacion) en sat_obra_paralizacion"
+    - id: "G05"
+      description: "Consistencia: flg_existe_paralizacion IS NOT NULL, flg_existe_paralizacion = (SUM(ind_opa_*) > 0) y causal_paralizacion_ultimo IS NULL si flg = FALSE"
+
+governance:
+  owner: "ycalderonf@uni.pe"
+  language: "es"

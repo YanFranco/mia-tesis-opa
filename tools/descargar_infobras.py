@@ -6,6 +6,9 @@ import urllib.request
 from pathlib import Path
 from typing import Iterator, Tuple
 
+# Ejecucion:
+# >> python C:\ws\formacion\uni-mia\mia-tesis-opa\tools\descargar_infobras.py 202501 202508
+
 # Configuración del logger de ejecución
 logging.basicConfig(
     level=logging.INFO,

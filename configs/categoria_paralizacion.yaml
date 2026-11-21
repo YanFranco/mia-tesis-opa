@@ -1,0 +1,62 @@
+# Mapeo configurable de causal_paralizacion -> categoria_paralizacion.
+# Usado por:
+#   - etl/06_carga_silver_parquet.ipynb (derivacion de categoria_paralizacion en sat_obra_paralizacion)
+#   - etl/07_carga_gold_ds_obras_publicas.ipynb (generacion dinamica de columnas ind_opa_<categoria>)
+#
+# Reglas de negocio (Regla 8 de docs/dataflow/silver_layer_rules.md):
+#   - Si flg_existe_paralizacion = FALSE -> categoria_paralizacion = NULL.
+#   - Si flg_existe_paralizacion = TRUE  -> cruce normalizado lower(trim(causal_paralizacion));
+#     si causal_paralizacion es NULL/vacio ("(vacío)") o no existe en mapping, se asigna default_category.
+
+version: "1.0"
+default_category: "NO_CLASIFICADO"
+
+categories:
+  - "CONTRACTUAL"
+  - "FINANCIERO"
+  - "OPERATIVO"
+  - "EXTERNO"
+  - "TECNICO"
+  - "GOBERNANZA"
+  - "NO_CLASIFICADO"
+
+mapping:
+  # CONTRACTUAL
+  "Incumplimiento del pago de valorizaciones u otros": "CONTRACTUAL"
+  "Incumplimiento de contrato": "CONTRACTUAL"
+  "Proceso arbitral": "CONTRACTUAL"
+  "Resolución de contrato": "CONTRACTUAL"
+  "Discrepancias controversias y arbitraje": "CONTRACTUAL"
+  "Resolución del contrato de supervisión de obra": "CONTRACTUAL"
+  "Obra Judicializada por la Entidad": "CONTRACTUAL"
+
+  # FINANCIERO
+  "Sin asignación presupuestal": "FINANCIERO"
+  "Falta de recursos financieros y liquidez": "FINANCIERO"
+  "Falta de calendarización presupuestal mensual": "FINANCIERO"
+
+  # OPERATIVO
+  "Desabastecimiento sostenido de materiales": "OPERATIVO"
+  "Falta de supervisor o inspector": "OPERATIVO"
+  "Abandono de obra": "OPERATIVO"
+  "Imposibilidad de entrega de terreno": "OPERATIVO"
+  "Demora en el cambio de profesionales núcleo ejecutor": "OPERATIVO"
+  "Accidentes en obra": "OPERATIVO"
+
+  # EXTERNO
+  "Fenómenos climatológicos": "EXTERNO"
+  "Conflictos sociales": "EXTERNO"
+  "Eventos climáticos": "EXTERNO"
+  "Paros no previsibles": "EXTERNO"
+
+  # TECNICO
+  "Modificaciones sustanciales al expediente técnico": "TECNICO"
+  "Deficiencias en el Expediente Técnico": "TECNICO"
+  "Vicios ocultos": "TECNICO"
+
+  # GOBERNANZA
+  "Transferencia de Gestión Municipal": "GOBERNANZA"
+
+  # NO_CLASIFICADO (incluye "(vacío)" / NULL / valores no mapeados mediante default_category)
+  "Otras causales": "NO_CLASIFICADO"
+  "Otras situaciones imprevisibles posteriores al p": "NO_CLASIFICADO"

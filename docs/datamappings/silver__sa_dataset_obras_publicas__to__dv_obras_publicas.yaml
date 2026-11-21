@@ -1,0 +1,310 @@
+mapping:
+  id: "silver__sa_dataset_obras_publicas__to__dv_obras_publicas"
+  version: "2.0.0"
+  title: "Mapeo Staging -> Silver Data Vault 2.0 (13 tablas Parquet)"
+  description: >-
+    Especificacion del pipeline cronologico desde las fotos mensuales Parquet
+    de Staging (data/stg/sa_dataset_obras_publicas) hacia la capa Silver bajo
+    modelo Data Vault 2.0 estricto (4 Hubs, 3 Links y 6 Satelites), incluyendo
+    categorizacion configurable de causales de paralizacion mediante YAML.
+  design_doc: "docs/designs/silver_datavault_y_gold_poc_ds_obras_publicas.md"
+  business_rules_doc: "docs/dataflow/silver_layer_rules.md"
+  notebook: "etl/06_carga_silver_parquet.ipynb"
+  config_file: "configs/categoria_paralizacion.yaml"
+
+source:
+  layer: "staging"
+  dataset: "sa_dataset_obras_publicas"
+  path_pattern: "data/stg/sa_dataset_obras_publicas/fecha_foto=YYYY-MM-DD/part-00000.parquet"
+  format: "parquet"
+  partition_column: "fecha_foto"
+  minimum_valid_partition: "2023-07-11"
+  projected_columns_count: 33
+  projected_columns:
+    - "codigo_infobras"
+    - "modalidad_ejecucion_obra"
+    - "naturaleza_obra"
+    - "tipo_obra_nivel_1"
+    - "tipo_obra_nivel_2"
+    - "tipo_obra_nivel_3"
+    - "fecha_inicio_obra"
+    - "fecha_finalizacion_real"
+    - "codigo_entidad"
+    - "nivel_gobierno"
+    - "sector_entidad"
+    - "codigo_unico"
+    - "tipo_formato"
+    - "n_obras_relacionadas_proyecto"
+    - "departamento"
+    - "provincia"
+    - "distrito"
+    - "fecha_aprobacion_expediente"
+    - "monto_aprobacion_et"
+    - "monto_aprobado_soles"
+    - "ruc_1"
+    - "razon_social_empresa_consorcio_1"
+    - "monto_contrato_soles_1"
+    - "ruc_2"
+    - "razon_social_empresa_consorcio_2"
+    - "monto_contrato_soles_2"
+    - "flg_existe_paralizacion"
+    - "causal_paralizacion"
+    - "fecha_paralizacion"
+    - "estado_ejecucion"
+    - "fecha_registro_avance"
+    - "ano_avance"
+    - "mes_avance"
+
+target:
+  layer: "silver"
+  architecture: "Data Vault 2.0 (Hubs, Links y Satelites en Parquet)"
+  root_path: "data/silver"
+  work_path: "data/silver/_work"
+  logs_path: "data/silver/logs"
+  format: "parquet"
+  compression: "ZSTD"
+  compression_level: 9
+  file_layout: "data/silver/<tabla>/part-00000.parquet"
+  table_count: 13
+
+load:
+  modes:
+    - "PRUEBA"
+    - "COMPLETA"
+    - "INCREMENTAL"
+  chronological_order: "ASC by fecha_foto (partitions >= 2023-07-11)"
+  atomicity: "Escritura previa en data/silver/_work/_tmp -> validacion bloqueante S01-S06 -> promocion atomica con respaldo _old"
+
+conventions:
+  open_end_date: "NULL (Regla 5)"
+  scd1_update_rule: "COALESCE(nuevo_valor, valor_actual) preservando first_seen_date y actualizando fecha_foto a la ultima aparicion (Regla 6)"
+  scd2_change_detection: "Comparacion NULL-safe mediante IS DISTINCT FROM sobre cols_track; cierra version previa con end_date = fecha_foto e inserta nueva version con start_date = fecha_foto, end_date = NULL"
+  missing_in_later_snapshot: "Obra o clave ausente mantiene su version abierta end_date = NULL y conserva ultimo fecha_foto observado (Regla 5)"
+
+transformations:
+  - id: "T01_DEDUP_OBRA"
+    description: "Regla 1: 1 fila por codigo_infobras y fecha_foto"
+    rule: >-
+      ROW_NUMBER() OVER (PARTITION BY codigo_infobras ORDER BY
+      fecha_registro_avance DESC NULLS LAST, ano_avance DESC NULLS LAST,
+      mes_avance DESC NULLS LAST) = 1
+  - id: "T02_PARALIZACION_REGLA3"
+    description: "Regla 3: consistencia cuando no existe paralizacion"
+    rule: >-
+      Cuando COALESCE(flg_existe_paralizacion, FALSE) = FALSE se fuerza
+      causal_paralizacion = NULL y fecha_paralizacion = NULL
+  - id: "T03_CATEGORIA_PARALIZACION"
+    description: "Regla 8: resolucion no hardcoded de categoria_paralizacion"
+    rule: >-
+      Si flg_existe_paralizacion = FALSE entonces NULL; si es TRUE entonces
+      COALESCE(m.categoria_paralizacion, default_category='NO_CLASIFICADO')
+      cruzando lower(trim(causal_paralizacion)) contra configs/categoria_paralizacion.yaml
+  - id: "T04_ROLES_CONTRATISTA"
+    description: "Regla 7: unificacion de ejecucion y supervision por rol"
+    rule: >-
+      Se proyecta ruc_1 con rol='EJECUCION' y ruc_2 con rol='SUPERVISION'
+      filtrando trim(ruc) <> '' y IS NOT NULL tanto para hub_contratista,
+      link_obra_contratista y sat_link_obra_contratista
+  - id: "T05_PROYECTO_VALIDO"
+    description: "Exclusion de codigo_unico nulo, vacio o cero"
+    rule: "codigo_unico IS NOT NULL AND trim(codigo_unico) NOT IN ('', '0')"
+
+tables:
+  hubs:
+    - name: "hub_obra_publica"
+      scd_type: "SCD1"
+      primary_key: ["codigo_infobras"]
+      order_by: ["codigo_infobras"]
+      columns:
+        - { target: "codigo_infobras", type: "VARCHAR", source: "codigo_infobras", rule: "PK de obra" }
+        - { target: "modalidad_ejecucion_obra", type: "VARCHAR", source: "modalidad_ejecucion_obra", rule: "COALESCE(nuevo, actual)" }
+        - { target: "naturaleza_obra", type: "VARCHAR", source: "naturaleza_obra", rule: "COALESCE(nuevo, actual)" }
+        - { target: "tipo_obra_nivel_1", type: "VARCHAR", source: "tipo_obra_nivel_1", rule: "COALESCE(nuevo, actual)" }
+        - { target: "tipo_obra_nivel_2", type: "VARCHAR", source: "tipo_obra_nivel_2", rule: "COALESCE(nuevo, actual)" }
+        - { target: "tipo_obra_nivel_3", type: "VARCHAR", source: "tipo_obra_nivel_3", rule: "COALESCE(nuevo, actual)" }
+        - { target: "fecha_inicio_obra", type: "DATE", source: "fecha_inicio_obra", rule: "COALESCE(nuevo, actual)" }
+        - { target: "fecha_finalizacion_real", type: "DATE", source: "fecha_finalizacion_real", rule: "COALESCE(nuevo, actual)" }
+        - { target: "first_seen_date", type: "DATE", source: "fecha_foto", rule: "Primera foto en que aparece la obra" }
+        - { target: "fecha_foto", type: "DATE", source: "fecha_foto", rule: "Ultima foto en que aparece la obra" }
+
+    - name: "hub_entidad"
+      scd_type: "SCD1"
+      primary_key: ["codigo_entidad"]
+      order_by: ["codigo_entidad"]
+      source_filter: "codigo_entidad IS NOT NULL AND trim(codigo_entidad) <> ''"
+      dedup_per_snapshot: "Moda determinista por codigo_entidad mediante QUALIFY ROW_NUMBER() OVER (ORDER BY cnt DESC, valor ASC)"
+      columns:
+        - { target: "codigo_entidad", type: "VARCHAR", source: "trim(codigo_entidad)", rule: "PK de entidad" }
+        - { target: "nivel_gobierno", type: "VARCHAR", source: "nivel_gobierno", rule: "COALESCE(nuevo, actual)" }
+        - { target: "sector_entidad", type: "VARCHAR", source: "sector_entidad", rule: "COALESCE(nuevo, actual)" }
+        - { target: "first_seen_date", type: "DATE", source: "fecha_foto", rule: "Primera foto de la entidad" }
+        - { target: "fecha_foto", type: "DATE", source: "fecha_foto", rule: "Ultima foto de la entidad" }
+
+    - name: "hub_proyecto"
+      scd_type: "SCD1"
+      primary_key: ["codigo_unico"]
+      order_by: ["codigo_unico"]
+      source_filter: "codigo_unico IS NOT NULL AND trim(codigo_unico) NOT IN ('', '0')"
+      dedup_per_snapshot: "Moda determinista de tipo_formato por codigo_unico mediante QUALIFY ROW_NUMBER() OVER (ORDER BY cnt DESC, tipo_formato ASC)"
+      columns:
+        - { target: "codigo_unico", type: "VARCHAR", source: "trim(codigo_unico)", rule: "PK de proyecto CUI" }
+        - { target: "tipo_formato", type: "VARCHAR", source: "tipo_formato", rule: "COALESCE(nuevo, actual)" }
+        - { target: "first_seen_date", type: "DATE", source: "fecha_foto", rule: "Primera foto del proyecto" }
+        - { target: "fecha_foto", type: "DATE", source: "fecha_foto", rule: "Ultima foto del proyecto" }
+
+    - name: "hub_contratista"
+      scd_type: "SCD1"
+      primary_key: ["ruc"]
+      order_by: ["ruc"]
+      source_filter: "UNION de (ruc_1, razon_social_empresa_consorcio_1) y (ruc_2, razon_social_empresa_consorcio_2) con trim(ruc) <> ''"
+      dedup_per_snapshot: "Moda determinista de razon_social por ruc mediante QUALIFY ROW_NUMBER() OVER (ORDER BY cnt DESC, rs ASC)"
+      columns:
+        - { target: "ruc", type: "VARCHAR", source: "trim(ruc_1) / trim(ruc_2)", rule: "PK unificada de contratista" }
+        - { target: "razon_social_empresa_consorcio", type: "VARCHAR", source: "razon_social_empresa_consorcio_1 / _2", rule: "COALESCE(nuevo, actual)" }
+        - { target: "first_seen_date", type: "DATE", source: "fecha_foto", rule: "Primera foto del RUC" }
+        - { target: "fecha_foto", type: "DATE", source: "fecha_foto", rule: "Ultima foto del RUC" }
+
+  links:
+    - name: "link_obra_entidad"
+      scd_type: "SCD2"
+      tracking_key: ["codigo_infobras"]
+      tracked_columns: ["codigo_entidad"]
+      order_by: ["codigo_infobras", "start_date"]
+      source_filter: "codigo_entidad IS NOT NULL AND trim(codigo_entidad) <> ''"
+      columns:
+        - { target: "codigo_infobras", type: "VARCHAR", source: "codigo_infobras" }
+        - { target: "codigo_entidad", type: "VARCHAR", source: "trim(codigo_entidad)" }
+        - { target: "start_date", type: "DATE", source: "fecha_foto" }
+        - { target: "end_date", type: "DATE", source: "NULL / fecha_foto al cerrar" }
+        - { target: "fecha_foto", type: "DATE", source: "fecha_foto" }
+
+    - name: "link_obra_proyecto"
+      scd_type: "SCD2"
+      tracking_key: ["codigo_infobras"]
+      tracked_columns: ["codigo_unico"]
+      order_by: ["codigo_infobras", "start_date"]
+      source_filter: "codigo_unico IS NOT NULL AND trim(codigo_unico) NOT IN ('', '0')"
+      columns:
+        - { target: "codigo_infobras", type: "VARCHAR", source: "codigo_infobras" }
+        - { target: "codigo_unico", type: "VARCHAR", source: "trim(codigo_unico)" }
+        - { target: "start_date", type: "DATE", source: "fecha_foto" }
+        - { target: "end_date", type: "DATE", source: "NULL / fecha_foto al cerrar" }
+        - { target: "fecha_foto", type: "DATE", source: "fecha_foto" }
+
+    - name: "link_obra_contratista"
+      scd_type: "SCD2"
+      tracking_key: ["codigo_infobras", "rol"]
+      tracked_columns: ["ruc"]
+      order_by: ["codigo_infobras", "rol", "start_date"]
+      source_filter: "UNION de rol='EJECUCION' (ruc_1) y rol='SUPERVISION' (ruc_2) con ruc valido"
+      columns:
+        - { target: "codigo_infobras", type: "VARCHAR", source: "codigo_infobras" }
+        - { target: "rol", type: "VARCHAR", source: "'EJECUCION' | 'SUPERVISION'" }
+        - { target: "ruc", type: "VARCHAR", source: "trim(ruc_1) | trim(ruc_2)" }
+        - { target: "start_date", type: "DATE", source: "fecha_foto" }
+        - { target: "end_date", type: "DATE", source: "NULL / fecha_foto al cerrar" }
+        - { target: "fecha_foto", type: "DATE", source: "fecha_foto" }
+
+  satellites:
+    - name: "sat_obra_paralizacion"
+      scd_type: "SCD2"
+      tracking_key: ["codigo_infobras"]
+      tracked_columns: ["flg_existe_paralizacion", "causal_paralizacion", "categoria_paralizacion", "fecha_paralizacion"]
+      order_by: ["codigo_infobras", "start_date"]
+      columns:
+        - { target: "codigo_infobras", type: "VARCHAR", source: "codigo_infobras" }
+        - { target: "flg_existe_paralizacion", type: "BOOLEAN", source: "COALESCE(flg_existe_paralizacion, FALSE)" }
+        - { target: "causal_paralizacion", type: "VARCHAR", source: "causal_paralizacion (NULL si flg=FALSE)" }
+        - { target: "categoria_paralizacion", type: "VARCHAR", source: "configs/categoria_paralizacion.yaml (NULL si flg=FALSE)" }
+        - { target: "fecha_paralizacion", type: "DATE", source: "fecha_paralizacion (NULL si flg=FALSE)" }
+        - { target: "start_date", type: "DATE", source: "fecha_foto" }
+        - { target: "end_date", type: "DATE", source: "NULL / fecha_foto al cerrar" }
+        - { target: "fecha_foto", type: "DATE", source: "fecha_foto" }
+
+    - name: "sat_obra_estado_ejecucion"
+      scd_type: "SCD2"
+      tracking_key: ["codigo_infobras"]
+      tracked_columns: ["estado_ejecucion"]
+      order_by: ["codigo_infobras", "start_date"]
+      source_filter: "estado_ejecucion IS NOT NULL"
+      columns:
+        - { target: "codigo_infobras", type: "VARCHAR", source: "codigo_infobras" }
+        - { target: "estado_ejecucion", type: "VARCHAR", source: "estado_ejecucion" }
+        - { target: "start_date", type: "DATE", source: "fecha_foto" }
+        - { target: "end_date", type: "DATE", source: "NULL / fecha_foto al cerrar" }
+        - { target: "fecha_foto", type: "DATE", source: "fecha_foto" }
+
+    - name: "sat_obra_ubigeo"
+      scd_type: "SCD1"
+      primary_key: ["codigo_infobras"]
+      order_by: ["codigo_infobras"]
+      columns:
+        - { target: "codigo_infobras", type: "VARCHAR", source: "codigo_infobras" }
+        - { target: "departamento", type: "VARCHAR", source: "departamento", rule: "COALESCE(nuevo, actual)" }
+        - { target: "provincia", type: "VARCHAR", source: "provincia", rule: "COALESCE(nuevo, actual)" }
+        - { target: "distrito", type: "VARCHAR", source: "distrito", rule: "COALESCE(nuevo, actual)" }
+        - { target: "first_seen_date", type: "DATE", source: "fecha_foto" }
+        - { target: "fecha_foto", type: "DATE", source: "fecha_foto" }
+
+    - name: "sat_obra_expediente_tecnico"
+      scd_type: "SCD2"
+      tracking_key: ["codigo_infobras"]
+      tracked_columns: ["fecha_aprobacion_expediente", "monto_aprobacion_et", "monto_aprobado_soles"]
+      order_by: ["codigo_infobras", "start_date"]
+      source_filter: "fecha_aprobacion_expediente IS NOT NULL OR monto_aprobacion_et IS NOT NULL OR monto_aprobado_soles IS NOT NULL"
+      columns:
+        - { target: "codigo_infobras", type: "VARCHAR", source: "codigo_infobras" }
+        - { target: "fecha_aprobacion_expediente", type: "DATE", source: "fecha_aprobacion_expediente" }
+        - { target: "monto_aprobacion_et", type: "DOUBLE", source: "monto_aprobacion_et" }
+        - { target: "monto_aprobado_soles", type: "DOUBLE", source: "monto_aprobado_soles" }
+        - { target: "start_date", type: "DATE", source: "fecha_foto" }
+        - { target: "end_date", type: "DATE", source: "NULL / fecha_foto al cerrar" }
+        - { target: "fecha_foto", type: "DATE", source: "fecha_foto" }
+
+    - name: "sat_proyecto"
+      scd_type: "SCD2"
+      tracking_key: ["codigo_unico"]
+      tracked_columns: ["n_obras_relacionadas_proyecto"]
+      order_by: ["codigo_unico", "start_date"]
+      source_filter: "codigo_unico IS NOT NULL AND trim(codigo_unico) NOT IN ('', '0') AND n_obras_relacionadas_proyecto IS NOT NULL"
+      dedup_per_snapshot: "GROUP BY codigo_unico usando MAX(n_obras_relacionadas_proyecto)"
+      columns:
+        - { target: "codigo_unico", type: "VARCHAR", source: "trim(codigo_unico)" }
+        - { target: "n_obras_relacionadas_proyecto", type: "INTEGER", source: "MAX(n_obras_relacionadas_proyecto)" }
+        - { target: "start_date", type: "DATE", source: "fecha_foto" }
+        - { target: "end_date", type: "DATE", source: "NULL / fecha_foto al cerrar" }
+        - { target: "fecha_foto", type: "DATE", source: "fecha_foto" }
+
+    - name: "sat_link_obra_contratista"
+      scd_type: "SCD2"
+      tracking_key: ["codigo_infobras", "rol", "ruc"]
+      tracked_columns: ["monto_contrato_soles"]
+      order_by: ["codigo_infobras", "rol", "ruc", "start_date"]
+      source_filter: "UNION de (rol='EJECUCION', ruc_1, monto_contrato_soles_1) y (rol='SUPERVISION', ruc_2, monto_contrato_soles_2) con ruc valido AND monto_contrato_soles IS NOT NULL"
+      columns:
+        - { target: "codigo_infobras", type: "VARCHAR", source: "codigo_infobras" }
+        - { target: "rol", type: "VARCHAR", source: "'EJECUCION' | 'SUPERVISION'" }
+        - { target: "ruc", type: "VARCHAR", source: "trim(ruc_1) | trim(ruc_2)" }
+        - { target: "monto_contrato_soles", type: "DOUBLE", source: "monto_contrato_soles_1 | monto_contrato_soles_2" }
+        - { target: "start_date", type: "DATE", source: "fecha_foto" }
+        - { target: "end_date", type: "DATE", source: "NULL / fecha_foto al cerrar" }
+        - { target: "fecha_foto", type: "DATE", source: "fecha_foto" }
+
+data_quality:
+  blocking_checks:
+    - id: "S01"
+      description: "Unicidad 100 % y cero nulos en clave primaria de las 5 tablas SCD1 (4 Hubs + sat_obra_ubigeo)"
+    - id: "S02"
+      description: "A lo sumo 1 version abierta (end_date IS NULL) por key_cols en las 8 tablas SCD2"
+    - id: "S03"
+      description: "Integridad temporal en las 8 tablas SCD2: start_date <= fecha_foto, start_date < end_date si cerrado, cero solapamientos de intervalos"
+    - id: "S04"
+      description: "Integridad referencial cruzada hacia hub_obra_publica, hub_entidad, hub_proyecto (sin '0'), hub_contratista y link_obra_contratista; rol IN ('EJECUCION', 'SUPERVISION')"
+    - id: "S05"
+      description: "Regla 3 y categorizacion YAML en sat_obra_paralizacion: NULL si flg=FALSE; valor dentro de categories de configs/categoria_paralizacion.yaml si flg=TRUE"
+    - id: "S06"
+      description: "Paridad exacta de esquema, tipos y conteo de filas entre memoria DuckDB y Parquet escrito en _work/_tmp"
+
+governance:
+  owner: "ycalderonf@uni.pe"
+  language: "es"

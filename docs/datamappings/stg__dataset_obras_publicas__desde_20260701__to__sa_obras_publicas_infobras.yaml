@@ -1,0 +1,1115 @@
+# DATA MAPPING - estructura INFOBRAS vigente desde 2026-07-01
+# Basado en el mapping anterior y el profiling proporcionado.
+mapping:
+  id: map_cgr_infobras_obras_publicas_desde_20260701
+  version: 2.0.0
+  status: draft
+  owner: yanfranco.cf@gmail.com
+  created: '2026-11-16'
+  description: Mapeo propuesto de la estructura de INFOBRAS observada en la foto del 01-07-2026 hacia sa_obras_publicas_infobras.
+    Los destinos y la carga requieren validación contra el DDL y el ETL.
+source:
+  system: CGR - INFOBRAS
+  type: file
+  format: xlsx
+  location_pattern: data/raw/cgr/opublicas/DataSet-Obras-Publicas*.xlsx
+  sheet: first
+  header_row: 1
+  encoding: utf-8
+  granularity: 1 fila = 1 registro de obra (con su último avance reportado) por snapshot
+  snapshot_date_extraction:
+    from: file_name
+    pattern: DataSet-Obras-Publicas\s+(\d{2})-(\d{2})-(\d{4})\.xlsx
+    format: DD-MM-YYYY
+    example: DataSet-Obras-Publicas 01-07-2026.xlsx
+    on_failure: skip_file
+  duplicate_headers:
+    note: Resolver por posición. El perfil muestra el segundo monto como .1, sufijo generado por pandas; comprobar
+      encabezados físicos del Excel.
+    affected_positions:
+    - 43
+    - 46
+  validity:
+    snapshot_date_from_inclusive: '2026-07-01'
+    basis: Fecha de la foto extraída del nombre del archivo; confirmar estructura de cada archivo posterior.
+  profiling:
+    file: DataSet-Obras-Publicas 01-07-2026.xlsx
+    rows: 191180
+    columns: 97
+    note: Encabezados y tipos observados en el resultado de profiling proporcionado; source_position es 1-based
+      y source es el nombre leído por pandas.
+target:
+  layer: staging
+  schema: public
+  entity: sa_obras_publicas_infobras
+  natural_key_candidate:
+  - codigo_infobras
+  - fecha_foto
+  - ano_avance
+  - mes_avance
+  natural_key_status: por validar (no definido en el pipeline actual)
+  naming_convention: snake_case_es
+  flag_prefix: flg_
+  count_prefix: n_
+load:
+  strategy: snapshot_replace
+  partition_key: fecha_foto
+  steps:
+  - Eliminar registros del destino con fecha_foto = fecha del archivo
+  - Insertar registros transformados en lotes
+  batch_size: 1000
+  idempotent: true
+  atomicity: per_batch
+  on_batch_error: retry_row_by_row
+  error_handling:
+    reject_policy: log_and_continue
+    log_fields:
+    - column
+    - value
+    - python_type
+    - error_message
+  unmapped_columns_policy:
+    source_missing_column: warn_and_load_null
+    target_missing_column: warn_and_skip
+  observations:
+  - 'El DELETE y los INSERT usan commits distintos: un fallo intermedio deja el snapshot parcial. Recomendable envolver
+    en una única transacción o usar tabla temporal + swap.'
+  status: Propuesta heredada del mapping anterior; la selección de versión y su ejecución deben implementarse y
+    validarse en el ETL.
+conventions:
+  null_representation: 'NULL'
+  boolean_true_values:
+  - si
+  - sí
+  - s
+  - '1'
+  - true
+  - t
+  - y
+  - 'yes'
+  boolean_false_values:
+  - 'no'
+  - '0'
+  - false
+  - f
+  - n
+  boolean_unknown: 'NULL'
+  date_input_format: dayfirst (dd/mm/yyyy)
+  date_unparseable: 'NULL'
+  decimal_separator_output: .
+  integer_out_of_range: 'NULL'
+  integer_non_integral: 'NULL'
+transformations:
+- id: TRF_NONE
+  description: Copia directa sin modificación.
+- id: TRF_AMOUNT_SPACE_TO_DECIMAL
+  description: 'Normaliza números cuyo separador decimal viene como espacio (ej. "1205065 23" -> 1205065.23; "S/1
+    002 000 00" -> 1002000.00).
+
+    '
+  rules:
+  - 'Si ya es numérico: se conserva.'
+  - Vacío/nulo -> NULL.
+  - Eliminar prefijo 'S/' (insensible a mayúsculas).
+  - El ÚLTIMO espacio es el separador decimal; los demás espacios y comas son separadores de miles y se eliminan.
+  - 'Sin espacios: eliminar comas y convertir.'
+  - Si falla la conversión -> NULL + warning.
+  output_type: decimal
+- id: TRF_DATE_DAYFIRST
+  description: Parseo a fecha con día primero; valores inválidos -> NULL.
+  output_type: date
+- id: TRF_BOOLEAN_SI_NO
+  description: Mapeo de Sí/No (y variantes) a booleano según conventions.
+  output_type: boolean
+- id: TRF_INTEGER_STRICT
+  description: 'Limpia espacios/comas, acepta solo enteros (o flotantes enteros) dentro del rango del tipo destino;
+    en otro caso NULL.
+
+    '
+  output_type: integer
+- id: TRF_FORCE_STRING
+  description: Fuerza tipo texto (preserva ceros a la izquierda / evita inferencia numérica).
+  output_type: string
+- id: TRF_ID_INTEGER_TO_STRING
+  description: Para valores numéricos enteros, convertir a texto sin sufijo .0; conservar textos y ceros iniciales,
+    sin redondear valores fraccionarios. Nulo o numérico no entero -> NULL y advertencia.
+  output_type: string
+audit_columns:
+- target: fecha_foto
+  type: date
+  nullable: false
+  derivation: Fecha extraída del nombre del archivo (source.snapshot_date_extraction).
+  description: Fecha lógica del snapshot; clave de partición y de reemplazo.
+  active: true
+- target: nombre_archivo
+  type: string
+  nullable: false
+  derivation: Nombre del archivo fuente.
+  description: 'Linaje: archivo de origen.'
+  active: false
+- target: fecha_creacion
+  type: timestamp
+  nullable: false
+  derivation: DEFAULT en la base de datos (now).
+  description: Momento de carga.
+  active: false
+- target: usuario_creacion
+  type: string
+  nullable: false
+  derivation: DEFAULT en la base de datos (current_user).
+  description: Usuario que ejecutó la carga.
+  active: false
+column_groups:
+- group: identificacion_entidad_obra
+  description: Identificación de la entidad y de la obra.
+  columns:
+  - source: codigo Entidad
+    target: codigo_entidad
+    type: string
+    nullable: true
+    transform: TRF_ID_INTEGER_TO_STRING
+    description: Código de la entidad pública.
+    source_position: 1
+  - source: Entidad Pública
+    target: entidad_publica
+    type: string
+    nullable: true
+    transform: TRF_NONE
+    description: Nombre de la entidad pública.
+    source_position: 2
+  - source: Código INFOBRAS
+    target: codigo_infobras
+    type: string
+    nullable: true
+    transform: TRF_ID_INTEGER_TO_STRING
+    description: Código único de la obra en INFOBRAS (inferido como identificador de negocio).
+    source_position: 3
+  - source: Nombre de obra
+    target: nombre_obra
+    type: string
+    nullable: true
+    transform: TRF_NONE
+    description: Denominación de la obra.
+    source_position: 4
+  - source: Modalidad de ejecución de la obra
+    target: modalidad_ejecucion_obra
+    type: string
+    nullable: true
+    transform: TRF_NONE
+    description: Modalidad (contrata, administración directa, etc.).
+    source_position: 5
+  - source: ¿Corresponde a un saldo de Obra?
+    target: flg_corresponde_saldo_obra
+    type: boolean
+    nullable: true
+    transform: TRF_BOOLEAN_SI_NO
+    description: Indica si la obra es un saldo de obra.
+    source_position: 6
+  - source: Código INFOBRAS de obra inicial
+    target: codigo_infobras_obra_inicial
+    type: string
+    nullable: true
+    transform: TRF_ID_INTEGER_TO_STRING
+    description: Código de la obra original cuando es saldo de obra.
+    source_position: 7
+  - source: Naturaleza de la obra
+    target: naturaleza_obra
+    type: string
+    nullable: true
+    transform: TRF_NONE
+    description: Naturaleza de la intervención.
+    source_position: 8
+- group: clasificacion_marcas
+  description: Clasificación de la obra y marcas especiales.
+  columns:
+  - source: Tipo de obra - Clasificador Nivel 1
+    target: tipo_obra_nivel_1
+    type: string
+    nullable: true
+    transform: TRF_NONE
+    description: Clasificación jerárquica de tipo de obra, nivel 1.
+    source_position: 9
+  - source: Tipo de obra - Clasificador Nivel 2
+    target: tipo_obra_nivel_2
+    type: string
+    nullable: true
+    transform: TRF_NONE
+    description: Clasificación nivel 2.
+    source_position: 10
+  - source: Tipo de obra - Clasificador Nivel 3
+    target: tipo_obra_nivel_3
+    type: string
+    nullable: true
+    transform: TRF_NONE
+    description: Clasificación nivel 3.
+    source_position: 11
+  - source: Estado de ejecución
+    target: estado_ejecucion
+    type: string
+    nullable: true
+    transform: TRF_NONE
+    description: Estado de ejecución de la obra.
+    source_position: 12
+  - source: Marca Reconstrucción con Cambios (Si/No)
+    target: flg_reconstruccion_con_cambios
+    type: boolean
+    nullable: true
+    transform: TRF_BOOLEAN_SI_NO
+    description: Obra marcada como Reconstrucción con Cambios.
+    source_position: 13
+  - source: Marca Reactivación Economicas (Si/No)
+    target: flg_reactivacion_economica
+    type: boolean
+    nullable: true
+    transform: TRF_BOOLEAN_SI_NO
+    description: Obra marcada como Reactivación Económica.
+    source_position: 14
+  - source: Otra Marca
+    target: otra_marca
+    type: string
+    nullable: true
+    transform: TRF_NONE
+    description: Otras marcas asignadas.
+    source_position: 15
+- group: control_social_y_fiscalizacion
+  description: Contadores de participación ciudadana y control.
+  columns:
+  - source: N° Informes de control
+    target: n_informes_control
+    type: integer
+    nullable: true
+    transform: TRF_INTEGER_STRICT
+    description: Cantidad de informes de control.
+    source_position: 17
+  - source: N° Comentarios ciudadanos
+    target: n_comentarios_ciudadanos
+    type: integer
+    nullable: true
+    transform: TRF_INTEGER_STRICT
+    description: Cantidad de comentarios ciudadanos.
+    source_position: 18
+  - source: ¿Es una obra de carácter reservado?
+    target: flg_obra_caracter_reservado
+    type: boolean
+    nullable: true
+    transform: TRF_BOOLEAN_SI_NO
+    description: Obra de carácter reservado.
+    source_position: 19
+- group: entidad_y_proyecto_inversion
+  description: Contexto institucional y proyecto de inversión asociado.
+  columns:
+  - source: Nivel de gobierno
+    target: nivel_gobierno
+    type: string
+    nullable: true
+    transform: TRF_NONE
+    description: Nacional, regional o local.
+    source_position: 20
+  - source: Sector de la Entidad
+    target: sector_entidad
+    type: string
+    nullable: true
+    transform: TRF_NONE
+    description: Sector de la entidad.
+    source_position: 21
+  - source: Codigo unico de inversión
+    target: codigo_unico
+    type: string
+    nullable: true
+    transform: TRF_ID_INTEGER_TO_STRING
+    description: Código Único de Inversiones (Invierte.pe).
+    source_position: 22
+  - source: Código SNIP
+    target: codigo_snip
+    type: string
+    nullable: true
+    transform: TRF_ID_INTEGER_TO_STRING
+    description: Código SNIP del proyecto.
+    source_position: 23
+  - source: Nombre de la inversión
+    target: nombre_proyecto
+    type: string
+    nullable: true
+    transform: TRF_NONE
+    description: Nombre del proyecto de inversión.
+    source_position: 24
+    equivalence_status: propuesta; validar semántica con la fuente y DDL
+  - source: Estado del proyecto
+    target: estado_proyecto
+    type: string
+    nullable: true
+    transform: TRF_NONE
+    description: Estado del proyecto.
+    source_position: 25
+  - source: Tipo Formato
+    target: tipo_formato
+    type: string
+    nullable: true
+    transform: TRF_NONE
+    description: Tipo de formato de inversión.
+    source_position: 26
+  - source: Monto Viable/Aprobado
+    target: monto_viable_aprobado
+    type: decimal
+    nullable: true
+    transform: TRF_AMOUNT_SPACE_TO_DECIMAL
+    unit: PEN
+    description: Monto viable/aprobado del proyecto.
+    source_position: 27
+  - source: N° obras pertenecientes a la inversión
+    target: n_obras_relacionadas_proyecto
+    type: integer
+    nullable: true
+    transform: TRF_INTEGER_STRICT
+    description: Número de obras asociadas al mismo proyecto.
+    source_position: 29
+    equivalence_status: propuesta; validar semántica con la fuente y DDL
+- group: ubicacion
+  description: Ubicación geográfica.
+  columns:
+  - source: Departamento
+    target: departamento
+    type: string
+    nullable: true
+    transform: TRF_NONE
+    description: Departamento.
+    source_position: 30
+  - source: Provincia
+    target: provincia
+    type: string
+    nullable: true
+    transform: TRF_NONE
+    description: Provincia.
+    source_position: 31
+  - source: Distrito
+    target: distrito
+    type: string
+    nullable: true
+    transform: TRF_NONE
+    description: Distrito.
+    source_position: 32
+  - source: Dirección o información de referencia
+    target: direccion_informacion_referencia
+    type: string
+    nullable: true
+    transform: TRF_NONE
+    description: Dirección o referencia de ubicación.
+    source_position: 33
+  - source: Tipo de ubicación (exacta/referencial)
+    target: tipo_ubicacion
+    type: string
+    nullable: true
+    transform: TRF_NONE
+    description: Exacta o referencial.
+    source_position: 34
+- group: expediente_tecnico
+  description: Aprobación del expediente técnico.
+  columns:
+  - source: Fecha de aprobación del expediente
+    target: fecha_aprobacion_expediente
+    type: date
+    nullable: true
+    transform: TRF_DATE_DAYFIRST
+    description: Fecha de aprobación del expediente técnico.
+    source_position: 35
+  - source: Costo de obra según Expediente técnico
+    target: monto_aprobacion_et
+    type: decimal
+    nullable: true
+    transform: TRF_AMOUNT_SPACE_TO_DECIMAL
+    description: Monto del expediente técnico en la moneda indicada.
+    source_position: 36
+    equivalence_status: propuesta; validar semántica con la fuente y DDL
+  - source: Moneda
+    target: moneda
+    type: string
+    nullable: true
+    transform: TRF_NONE
+    description: Moneda del monto del expediente.
+    source_position: 37
+  - source: Tasa de cambio
+    target: tasa_cambio
+    type: decimal
+    nullable: true
+    transform: TRF_AMOUNT_SPACE_TO_DECIMAL
+    description: Tasa de cambio aplicada a soles.
+    source_position: 38
+  - source: Costo de obra en soles según ET en soles
+    target: monto_aprobado_soles
+    type: decimal
+    nullable: true
+    transform: TRF_AMOUNT_SPACE_TO_DECIMAL
+    unit: PEN
+    description: Monto del expediente convertido a soles.
+    source_position: 39
+    equivalence_status: propuesta; validar semántica con la fuente y DDL
+  - source: Documento de aprobación de expediente
+    target: documento_aprobacion_expediente
+    type: string
+    nullable: true
+    transform: TRF_NONE
+    description: Documento que aprueba el expediente.
+    source_position: 40
+- group: contratista
+  description: Empresas o consorcios contratistas (hasta 2 ocurrencias).
+  columns:
+  - source: RUC (Ejecución)
+    target: ruc_1
+    type: string
+    nullable: true
+    transform: TRF_FORCE_STRING
+    description: RUC del contratista 1.
+    source_position: 41
+  - source: Nombre o razón social de la empresa o consorcio
+    target: razon_social_empresa_consorcio_1
+    type: string
+    nullable: true
+    transform: TRF_NONE
+    description: Razón social del contratista 1.
+    source_position: 42
+  - source: Monto del contrato  en soles
+    target: monto_contrato_soles_1
+    type: decimal
+    nullable: true
+    transform: TRF_AMOUNT_SPACE_TO_DECIMAL
+    unit: PEN
+    description: Monto de contrato 1.
+    source_position: 43
+  - source: RUC (Supervisión)
+    target: ruc_2
+    type: string
+    nullable: true
+    transform: TRF_FORCE_STRING
+    description: Dato de la empresa o consorcio de supervisión; destino histórico con sufijo 2. Validar semántica
+      y DDL.
+    source_position: 44
+  - source: 'Nombre o razón social de la empresa o consorcio:'
+    target: razon_social_empresa_consorcio_2
+    type: string
+    nullable: true
+    transform: TRF_NONE
+    description: Dato de la empresa o consorcio de supervisión; destino histórico con sufijo 2. Validar semántica
+      y DDL.
+    source_position: 45
+  - source: Monto del contrato  en soles.1
+    target: monto_contrato_soles_2
+    type: decimal
+    nullable: true
+    transform: TRF_AMOUNT_SPACE_TO_DECIMAL
+    unit: PEN
+    description: Dato de la empresa o consorcio de supervisión; destino histórico con sufijo 2. Validar semántica
+      y DDL.
+    source_position: 46
+- group: supervision
+  description: Profesional/empresa a cargo de la supervisión (ocurrencia 1; inferido por las fechas de supervisión).
+  columns:
+  - source: Nombres Apellidos (Supervisión)
+    target: nombres_apellidos
+    type: string
+    nullable: true
+    transform: TRF_NONE
+    pii: true
+    description: Nombre del supervisor.
+    source_position: 47
+  - source: Fecha inicio supervision
+    target: fecha_inicio_supervision
+    type: date
+    nullable: true
+    transform: TRF_DATE_DAYFIRST
+    description: Inicio de la supervisión.
+    source_position: 48
+  - source: Fecha fin supervision
+    target: fecha_fin_supervision
+    type: date
+    nullable: true
+    transform: TRF_DATE_DAYFIRST
+    description: Fin de la supervisión.
+    source_position: 49
+- group: residente_inspector
+  description: Segundo profesional con fechas de labores (ocurrencia 2; inferido, probablemente residente/inspector).
+  columns:
+  - source: Nombres Apellidos (Residente)
+    target: nombres_apellidos_2
+    type: string
+    nullable: true
+    transform: TRF_NONE
+    pii: true
+    description: Nombre del profesional.
+    source_position: 50
+  - source: Fecha inicio de labores
+    target: fecha_inicio_labores
+    type: date
+    nullable: true
+    transform: TRF_DATE_DAYFIRST
+    description: Inicio de labores.
+    source_position: 51
+  - source: Fecha fin  de labores
+    target: fecha_fin_labores
+    type: date
+    nullable: true
+    transform: TRF_DATE_DAYFIRST
+    description: Fin de labores.
+    source_position: 52
+- group: plazos_y_entrega_terreno
+  description: Plazos programados y entrega del terreno.
+  columns:
+  - source: Fecha de inicio de obra
+    target: fecha_inicio_obra
+    type: date
+    nullable: true
+    transform: TRF_DATE_DAYFIRST
+    description: Inicio de obra.
+    source_position: 53
+  - source: Fecha finalización programada de obra
+    target: fecha_fin_programada_obra
+    type: date
+    nullable: true
+    transform: TRF_DATE_DAYFIRST
+    description: Fin programado.
+    source_position: 54
+  - source: Plazo de ejecución (en dias)
+    target: plazo_ejecucion_dias
+    type: integer
+    nullable: true
+    transform: TRF_INTEGER_STRICT
+    unit: days
+    description: Plazo original de ejecución.
+    source_position: 55
+  - source: Tipo de entrega
+    target: tipo_entrega
+    type: string
+    nullable: true
+    transform: TRF_NONE
+    description: Total o parcial.
+    source_position: 56
+  - source: Porcentaje de terreno entregado
+    target: porcentaje_terreno_entregado
+    type: decimal
+    nullable: true
+    transform: TRF_AMOUNT_SPACE_TO_DECIMAL
+    unit: percent
+    description: '% de terreno entregado.'
+    source_position: 57
+  - source: Fecha de entrega del terreno
+    target: fecha_entrega_terreno
+    type: date
+    nullable: true
+    transform: TRF_DATE_DAYFIRST
+    description: Fecha de entrega del terreno.
+    source_position: 58
+- group: avance_fisico_financiero
+  description: Último registro de avance reportado.
+  columns:
+  - source: Año de avance
+    target: ano_avance
+    type: integer
+    nullable: true
+    transform: TRF_INTEGER_STRICT
+    description: Año del avance (inferido).
+    source_position: 59
+  - source: Mes de avance
+    target: mes_avance
+    type: integer
+    nullable: true
+    transform: TRF_INTEGER_STRICT
+    description: Mes del avance (inferido; 1-12).
+    source_position: 60
+  - source: Fecha de registro de avance
+    target: fecha_registro_avance
+    type: date
+    nullable: true
+    transform: TRF_DATE_DAYFIRST
+    description: Fecha en que se registró el avance.
+    source_position: 61
+  - source: Avance Físico Programado Acumulado (%)
+    target: avance_fisico_programado_acumulado
+    type: decimal
+    nullable: true
+    transform: TRF_AMOUNT_SPACE_TO_DECIMAL
+    unit: percent
+    description: Avance físico programado acumulado.
+    source_position: 62
+  - source: Avance Físico Real Acumulado (%)
+    target: avance_fisico_real_acumulado
+    type: decimal
+    nullable: true
+    transform: TRF_AMOUNT_SPACE_TO_DECIMAL
+    unit: percent
+    description: Avance físico real acumulado.
+    source_position: 63
+  - source: Monto de valorización Programado Acumulado
+    target: monto_valorizacion_programado_acum
+    type: decimal
+    nullable: true
+    transform: TRF_AMOUNT_SPACE_TO_DECIMAL
+    unit: PEN
+    description: Valorización programada acumulada.
+    source_position: 64
+  - source: Monto de valorización Ejecutado Acumulado
+    target: monto_valorizacion_ejecutado_acum
+    type: decimal
+    nullable: true
+    transform: TRF_AMOUNT_SPACE_TO_DECIMAL
+    unit: PEN
+    description: Valorización ejecutada acumulada.
+    source_position: 65
+  - source: Porcentaje de ejecución financiera
+    target: porcentaje_ejecucion_financiera
+    type: decimal
+    nullable: true
+    transform: TRF_AMOUNT_SPACE_TO_DECIMAL
+    unit: percent
+    description: '% de ejecución financiera.'
+    source_position: 66
+  - source: Monto de ejecución financiera de la obra
+    target: monto_ejecucion_financiera_obra
+    type: decimal
+    nullable: true
+    transform: TRF_AMOUNT_SPACE_TO_DECIMAL
+    unit: PEN
+    description: Monto de ejecución financiera.
+    source_position: 67
+  - source: Comentarios
+    target: comentarios
+    type: string
+    nullable: true
+    transform: TRF_NONE
+    description: Comentarios libres del registro de avance.
+    source_position: 72
+- group: paralizacion
+  description: Paralización de la obra.
+  columns:
+  - source: Existe Paralización
+    target: flg_existe_paralizacion
+    type: boolean
+    nullable: true
+    transform: TRF_BOOLEAN_SI_NO
+    description: Indica si existe paralización.
+    source_position: 68
+  - source: Causal de paralización
+    target: causal_paralizacion
+    type: string
+    nullable: true
+    transform: TRF_NONE
+    description: Causal de la paralización.
+    source_position: 69
+  - source: Fecha de paralización
+    target: fecha_paralizacion
+    type: date
+    nullable: true
+    transform: TRF_DATE_DAYFIRST
+    description: Fecha de paralización.
+    source_position: 70
+  - source: Número de dias paralizado
+    target: numero_dias_paralizado
+    type: integer
+    nullable: true
+    transform: TRF_INTEGER_STRICT
+    unit: days
+    description: Días de paralización.
+    source_position: 71
+- group: modificaciones_adicionales_deductivos
+  description: Modificaciones de plazo/monto, controversias, adicionales y deductivos.
+  columns:
+  - source: N° de modificaciones
+    target: n_modificaciones
+    type: integer
+    nullable: true
+    transform: TRF_INTEGER_STRICT
+    description: Cantidad de modificaciones.
+    source_position: 73
+  - source: N° días de modificaciones de plazo
+    target: n_dias_modificaciones_plazo
+    type: integer
+    nullable: true
+    transform: TRF_INTEGER_STRICT
+    unit: days
+    description: Días acumulados de ampliación de plazo.
+    source_position: 74
+  - source: Nuevo Plazo de ejecución (en dias)
+    target: nuevo_plazo_ejecucion_dias
+    type: integer
+    nullable: true
+    transform: TRF_INTEGER_STRICT
+    unit: days
+    description: Plazo vigente tras modificaciones.
+    source_position: 75
+  - source: Fecha finalización reprogramada de obra
+    target: fecha_finalizacion_reprogramada_obra
+    type: date
+    nullable: true
+    transform: TRF_DATE_DAYFIRST
+    description: Fin reprogramado.
+    source_position: 76
+  - source: N° de controversias
+    target: n_controversias
+    type: integer
+    nullable: true
+    transform: TRF_INTEGER_STRICT
+    description: Cantidad de controversias.
+    source_position: 77
+  - source: N° de adicionales de obra
+    target: n_adicionales_obra
+    type: integer
+    nullable: true
+    transform: TRF_INTEGER_STRICT
+    description: Cantidad de adicionales de obra.
+    source_position: 78
+  - source: Monto de adicionales de obra en soles
+    target: monto_adicionales_obra_soles
+    type: decimal
+    nullable: true
+    transform: TRF_AMOUNT_SPACE_TO_DECIMAL
+    unit: PEN
+    description: Monto de adicionales de obra.
+    source_position: 79
+  - source: N° de adicionales de supervisión
+    target: n_adicionales_supervision
+    type: integer
+    nullable: true
+    transform: TRF_INTEGER_STRICT
+    description: Cantidad de adicionales de supervisión.
+    source_position: 80
+  - source: Monto de adicionales de supervisión en soles
+    target: monto_adicionales_supervision_soles
+    type: decimal
+    nullable: true
+    transform: TRF_AMOUNT_SPACE_TO_DECIMAL
+    unit: PEN
+    description: Monto de adicionales de supervisión.
+    source_position: 81
+  - source: N° de deductivos de obra
+    target: n_deductivos_obra
+    type: integer
+    nullable: true
+    transform: TRF_INTEGER_STRICT
+    description: Cantidad de deductivos de obra.
+    source_position: 82
+  - source: Monto de deductivos de obra en soles
+    target: monto_deductivo_obra_soles
+    type: decimal
+    nullable: true
+    transform: TRF_AMOUNT_SPACE_TO_DECIMAL
+    unit: PEN
+    description: Monto de deductivos de obra.
+    source_position: 83
+  - source: N° de deductivos de supervisión
+    target: n_deductivo_supervision
+    type: integer
+    nullable: true
+    transform: TRF_INTEGER_STRICT
+    description: Cantidad de deductivos de supervisión.
+    source_position: 84
+  - source: Monto de deductivos de supervisión en soles
+    target: monto_deductivos_supervision_soles
+    type: decimal
+    nullable: true
+    transform: TRF_AMOUNT_SPACE_TO_DECIMAL
+    unit: PEN
+    description: Monto de deductivos de supervisión.
+    source_position: 85
+- group: cierre_liquidacion_transferencia
+  description: Finalización, recepción, liquidación y transferencia.
+  columns:
+  - source: Fecha de finalización real
+    target: fecha_finalizacion_real
+    type: date
+    nullable: true
+    transform: TRF_DATE_DAYFIRST
+    description: Fecha real de finalización.
+    source_position: 86
+  - source: Motivo en caso no se llegue al 100%
+    target: motivo_caso_no_llegue_100_porciento
+    type: string
+    nullable: true
+    transform: TRF_NONE
+    description: Motivo si no se alcanza 100% de avance.
+    source_position: 87
+  - source: ¿Tiene recepción total?
+    target: flg_tiene_recepcion_total
+    type: boolean
+    nullable: true
+    transform: TRF_BOOLEAN_SI_NO
+    description: Recepción total de la obra.
+    source_position: 88
+  - source: Fecha de recepción
+    target: fecha_recepcion
+    type: date
+    nullable: true
+    transform: TRF_DATE_DAYFIRST
+    description: Fecha de recepción.
+    source_position: 89
+  - source: ¿Tiene liquidación de obra?
+    target: flg_tiene_liquidacion_obra
+    type: boolean
+    nullable: true
+    transform: TRF_BOOLEAN_SI_NO
+    description: Existe liquidación de obra.
+    source_position: 90
+  - source: Fecha de aprobación de liquidación de obra
+    target: fecha_aprobacion_liquidacion_obra
+    type: date
+    nullable: true
+    transform: TRF_DATE_DAYFIRST
+    description: Fecha de aprobación de la liquidación.
+    source_position: 91
+  - source: Costo de la obra en soles
+    target: costo_obra_soles
+    type: decimal
+    nullable: true
+    transform: TRF_AMOUNT_SPACE_TO_DECIMAL
+    unit: PEN
+    description: Costo final de la obra.
+    source_position: 92
+  - source: ¿Corresponde la transferencia  a otra entidad?
+    target: flg_corresponde_transferencia_otra_entidad
+    type: boolean
+    nullable: true
+    transform: TRF_BOOLEAN_SI_NO
+    description: Se transfiere a otra entidad.
+    source_position: 93
+  - source: Fecha de transferencia
+    target: fecha_transferencia
+    type: date
+    nullable: true
+    transform: TRF_DATE_DAYFIRST
+    description: Fecha de transferencia.
+    source_position: 94
+  - source: Tipo de entidad que recepciona la obra
+    target: tipo_entidad_recepciona_obra
+    type: string
+    nullable: true
+    transform: TRF_NONE
+    description: Tipo de entidad receptora.
+    source_position: 95
+- group: devengado
+  description: Ejecución presupuestal devengada.
+  columns:
+  - source: Año de primer devengado
+    target: ano_primer_devengado
+    type: integer
+    nullable: true
+    transform: TRF_INTEGER_STRICT
+    description: Año del primer devengado.
+    source_position: 96
+  - source: Monto Total devengado del proyecto
+    target: monto_total_devengado_proyecto
+    type: decimal
+    nullable: true
+    transform: TRF_AMOUNT_SPACE_TO_DECIMAL
+    unit: PEN
+    description: Monto total devengado del proyecto.
+    source_position: 97
+- group: nuevos_campos_pendientes
+  description: Campos presentes en la foto sin destino equivalente confirmado en el mapping anterior; no cargar
+    hasta validar o ampliar el DDL.
+  columns:
+  - source: N° de Veedurías Ciudadanas
+    source_position: 16
+    target: null
+    proposed_target: n_veedurias_ciudadanas
+    type: integer
+    nullable: true
+    transform: TRF_INTEGER_STRICT
+    description: Cantidad de veedurías ciudadanas; no asumir equivalencia con informes de monitores o denuncias.
+  - source: Costo Actualizado de la inversión
+    source_position: 28
+    target: null
+    proposed_target: costo_actualizado_inversion
+    type: decimal
+    nullable: true
+    transform: TRF_AMOUNT_SPACE_TO_DECIMAL
+    unit: PEN
+    description: Costo actualizado de la inversión; el perfil observó únicamente ceros. Equivalencia con monto viable
+      actualizado no confirmada.
+data_quality:
+  severity_levels:
+  - error
+  - warning
+  - info
+  rules:
+  - id: DQ001
+    target: codigo_infobras
+    rule: not_null
+    severity: error
+  - id: DQ002
+    target: fecha_foto
+    rule: not_null
+    severity: error
+  - id: DQ003
+    target:
+    - codigo_infobras
+    - fecha_foto
+    - ano_avance
+    - mes_avance
+    rule: unique
+    severity: warning
+    note: Validar grano real antes de imponer
+  - id: DQ004
+    target: mes_avance
+    rule: range
+    min: 1
+    max: 12
+    severity: warning
+  - id: DQ005
+    target:
+    - avance_fisico_programado_acumulado
+    - avance_fisico_real_acumulado
+    - porcentaje_ejecucion_financiera
+    - porcentaje_terreno_entregado
+    rule: range
+    min: 0
+    max: 100
+    severity: warning
+  - id: DQ006
+    target:
+    - fecha_inicio_obra
+    - fecha_fin_programada_obra
+    rule: fecha_inicio_obra <= fecha_fin_programada_obra
+    severity: warning
+  - id: DQ007
+    target:
+    - monto_aprobacion_et
+    - moneda
+    - tasa_cambio
+    - monto_aprobado_soles
+    rule: monto_aprobado_soles consistente con monto_aprobacion_et * tasa_cambio cuando moneda != PEN
+    severity: info
+  - id: DQ008
+    target: columnas con transformación TRF_*
+    rule: tasa de NULLs por conversión fallida <= umbral
+    threshold_pct: 1
+    severity: warning
+  - id: DQ009
+    target:
+    - ruc_1
+    - ruc_2
+    rule: longitud = 11 y solo dígitos
+    severity: warning
+  - id: DQ010
+    target: '*_soles, monto_*'
+    rule: valor >= 0 (excepto deductivos según semántica)
+    severity: info
+  reconciliation:
+  - filas_origen == filas_insertadas + filas_rechazadas
+  - conteo por fecha_foto en destino == filas del archivo
+governance:
+  data_classification: public_government_open_data
+  pii_columns:
+  - nombres_apellidos
+  - nombres_apellidos_2
+  pii_note: Datos de profesionales publicados por la fuente; aplicar enmascaramiento si se exponen fuera del uso
+    académico.
+  lineage:
+  - fecha_foto
+  - nombre_archivo
+  - fecha_creacion
+  - usuario_creacion
+  retention: Sin definir; se conservan todos los snapshots (partición por fecha_foto).
+findings:
+- id: F201
+  severity: high
+  title: Identificación de ejecución y supervisión
+  detail: Las posiciones 41-43 corresponden a ejecución y 44-46 a supervisión. Los destinos históricos con sufijo
+    2 se conservan provisionalmente; validar su significado.
+- id: F202
+  severity: high
+  title: Datos ausentes y campos nuevos
+  detail: Los destinos sin origen están listados en unavailable_target_columns. Las veedurías y el costo actualizado
+    de inversión no tienen destino confirmado y requieren validación de DDL.
+- id: F203
+  severity: medium
+  title: Encabezado repetido de monto
+  detail: La segunda columna de monto aparece con sufijo .1 en pandas. Usar posición 46 y comprobar el encabezado
+    físico; no confundir con ejecución en posición 43.
+- id: F204
+  severity: medium
+  title: Campos de equivalencia propuesta
+  detail: Las equivalencias marcadas en las columnas son hipótesis de negocio, no validaciones. Revisar también
+    tipos y disponibilidad de destinos contra el DDL.
+- id: F205
+  severity: medium
+  title: Perfil limitado a una foto
+  detail: El perfil reporta 191180 filas y 97 columnas. La vigencia desde 2026-07-01 se basa en la fecha indicada;
+    verificar estructura en fotografías posteriores.
+- id: F206
+  severity: medium
+  title: Conversión de identificadores y montos
+  detail: 'Identificadores numéricos con nulos se observan como float en pandas: al convertir a texto quitar solo
+    el sufijo decimal .0 de valores enteros sin perder precisión. Validar la regla de espacios en importes y registrar
+    conversiones fallidas.'
+unavailable_target_columns:
+  policy: Asignar NULL cuando la columna exista en destino; no inferir valores ni reutilizar otro campo sin validación.
+  columns:
+  - target: n_informes_monitores_ciudadanos
+    previous_source: N° Informes de Monitores Ciudadanos
+    value: null
+    reason: No aparece en el profiling de la nueva estructura.
+  - target: n_denuncias_viculadas
+    previous_source: N° Denuncias vinculadas
+    value: null
+    reason: No aparece en el profiling de la nueva estructura.
+  - target: fecha_aprobacion
+    previous_source: Fecha de aprobación
+    value: null
+    reason: No aparece en el profiling de la nueva estructura.
+  - target: monto_viable_actualizado
+    previous_source: Monto Viable actualizado
+    value: null
+    reason: No aparece en el profiling de la nueva estructura.
+  - target: fecha_actualizacion
+    previous_source: Fecha de actualización
+    value: null
+    reason: No aparece en el profiling de la nueva estructura.
+  - target: tipo_documento_identidad
+    previous_source: Tipo de documento de identidad
+    value: null
+    reason: No aparece en el profiling de la nueva estructura.
+  - target: numero_documento_identidad
+    previous_source: Número de documento
+    value: null
+    reason: No aparece en el profiling de la nueva estructura.
+  - target: colegiatura
+    previous_source: Colegiatura
+    value: null
+    reason: No aparece en el profiling de la nueva estructura.
+  - target: numero_colegiatura
+    previous_source: Número de colegiatura
+    value: null
+    reason: No aparece en el profiling de la nueva estructura.
+  - target: tipo_documento_identidad_2
+    previous_source: Tipo de documento de identidad
+    value: null
+    reason: No aparece en el profiling de la nueva estructura.
+  - target: numero_documento_identidad_2
+    previous_source: Número de documento
+    value: null
+    reason: No aparece en el profiling de la nueva estructura.
+  - target: colegiatura_2
+    previous_source: Colegiatura
+    value: null
+    reason: No aparece en el profiling de la nueva estructura.
+  - target: numero_colegiatura_2
+    previous_source: Número de colegiatura
+    value: null
+    reason: No aparece en el profiling de la nueva estructura.
+  - target: estado_actualizacion_registro_avance
+    previous_source: Estado de actualización de registro de avance
+    value: null
+    reason: No aparece en el profiling de la nueva estructura.
+  - target: tipo_certificado_inversion_publica
+    previous_source: Tipo de certificado de inversión pública
+    value: null
+    reason: No aparece en el profiling de la nueva estructura.
+  - target: numero_cipril_cipgn
+    previous_source: Número del CIPRIL /CIPGN
+    value: null
+    reason: No aparece en el profiling de la nueva estructura.
+  - target: fech_cipril_cipgn
+    previous_source: Fecha del CIPRIL / CIPGN
+    value: null
+    reason: No aparece en el profiling de la nueva estructura.
+  - target: monto_cipril_cipgn
+    previous_source: Monto CIPRIL / CIPGN
+    value: null
+    reason: No aparece en el profiling de la nueva estructura.

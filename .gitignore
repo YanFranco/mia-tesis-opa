@@ -7,10 +7,12 @@ Chpt/
 
 # Datos y almacenamiento pesado (¡No subir a GitHub!)
 data/
+!mcies_ml_project/data/
 *.csv
 *.xlsx
 *.jsonl
 *.parquet
+!mcies_ml_project/data/ds_obras_publicas_poc.parquet
 *.pkl
 *.pickle
 *.h5
@@ -36,6 +38,7 @@ __pycache__/
 .secrets
 .config
 credentials.json
+*.ini
 
 # IDEs y editores de código
 .vscode/
