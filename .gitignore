@@ -11,8 +11,8 @@ data/
 *.csv
 *.xlsx
 *.jsonl
-*.parquet
-!mcies_ml_project/data/ds_obras_publicas_poc.parquet
+#*.parquet
+!ds_obras_publicas_poc.parquet
 *.pkl
 *.pickle
 *.h5
